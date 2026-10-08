@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt pyinstaller
-      - run: pyinstaller --onefile --noconsole --icon icon.ico --name ReechoKeys reechokeys.py
+      - run: pyinstaller --onefile --noconsole --icon icon.ico --add-data "icon.ico;." --collect-all customtkinter --name ReechoKeys reechokeys.py
       - run: choco install innosetup -y --no-progress
       - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
       - uses: actions/upload-artifact@v4

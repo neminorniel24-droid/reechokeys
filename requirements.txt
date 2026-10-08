@@ -3,3 +3,4 @@ pygame
 pynput
 pystray
 pillow
+customtkinter
