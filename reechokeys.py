@@ -15,23 +15,27 @@ import os
 import queue
 import random
 import shutil
+import socket
 import subprocess
 import sys
+import threading
+import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 import numpy as np
 import pygame
+from PIL import Image, ImageDraw
 from pynput import keyboard
 
 try:
     import pystray
-    from PIL import Image, ImageDraw
 except Exception:          # tray is optional; the app still works without it
     pystray = None
 TRAY_OK = pystray is not None and sys.platform != "darwin"
 
+__version__ = "1.2"
 SR = 44100
 rng = np.random.default_rng()
 
@@ -411,6 +415,9 @@ def apply_fx(x, fx):
         x = x + fx["bass"] * 1.5 * lowpass(x, 160)
     if fx["reverb"] > 0.01:
         x = reverb(x, fx["reverb"])
+    n = int(fx.get("length", 3.0) * SR)             # optional tail trim
+    if 600 < n < len(x):
+        x = x[:n]
     return x
 
 
@@ -475,6 +482,18 @@ def make_icon(size=64):
     return img
 
 
+def tray_image():
+    try:
+        im = Image.open(resource("icon.ico"))
+        try:
+            im.size = (64, 64)
+        except Exception:
+            pass
+        return im.convert("RGBA")
+    except Exception:
+        return make_icon()
+
+
 def autostart_get():
     if not sys.platform.startswith("win"):
         return False
@@ -504,10 +523,71 @@ def autostart_set(on):
 
 
 # =====================================================================
+#  Single instance: a second launch just wakes up the first one
+# =====================================================================
+IPC_PORT = 47653                       # local-only (127.0.0.1), never leaves your computer
+IPC_HELLO, IPC_OK = b"ReechoKeys:show", b"ReechoKeys:ok"
+
+
+def claim_single_instance():
+    """(True, socket) if this is the first copy; (False, None) if one is already running."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if not sys.platform.startswith("win"):
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(("127.0.0.1", IPC_PORT))
+        s.listen(4)
+        return True, s
+    except OSError:
+        s.close()
+    try:
+        with socket.create_connection(("127.0.0.1", IPC_PORT), timeout=1.5) as c:
+            c.sendall(IPC_HELLO)
+            if c.recv(64) == IPC_OK:
+                return False, None
+    except OSError:
+        pass
+    return True, None                  # port used by something else: just run normally
+
+
+def serve_ipc(sock, cmds):
+    while True:
+        try:
+            conn, _ = sock.accept()
+        except OSError:
+            return
+        try:
+            conn.settimeout(1.0)
+            if conn.recv(64) == IPC_HELLO:
+                conn.sendall(IPC_OK)
+                cmds.put("show")
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+
+# =====================================================================
 #  The app
 # =====================================================================
+CAT_COLOR = {"Guns": "#FF5A36", "Impact": "#FFB020", "Sci-Fi": "#2DD4FF",
+             "Keyboard": "#A78BFA", "Fun": "#34D399", "Mine": "#F472B6"}
+
+
+def dot_image(color, size=14):
+    big = size * 4
+    im = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    ImageDraw.Draw(im).ellipse([big * .1, big * .1, big * .9, big * .9], fill=color)
+    return ctk.CTkImage(light_image=im, dark_image=im, size=(size, size))
+
+
+def mix_color(amt):
+    lo, hi = (0x6B, 0x35, 0x2A), (0xFF, 0x5A, 0x36)
+    return "#%02x%02x%02x" % tuple(int(lo[i] + (hi[i] - lo[i]) * amt) for i in range(3))
+
+
 class App(ctk.CTk):
-    def __init__(self):
+    def __init__(self, ipc_sock=None):
         super().__init__()
         pygame.mixer.init(SR, -16, 2, 512, allowedchanges=0)
         pygame.mixer.set_num_channels(32)
@@ -517,9 +597,9 @@ class App(ctk.CTk):
         self.custom, self.cards, self.voices = {}, {}, []
         self.pressed, self.cmds = set(), queue.Queue()
         self.count, self.tray, self.listener = 0, None, None
-        self._enabled = True
+        self.ipc_sock = ipc_sock
+        self._enabled, self._level = True, 0.0
         self._rerender_job = None
-        self.sel_key = "builtin|Shotgun"
 
         st = {}
         try:
@@ -528,7 +608,8 @@ class App(ctk.CTk):
             pass
         self._volume = float(st.get("volume", 0.8))
         self.fx = {"reverb": float(st.get("reverb", 0.0)), "bass": float(st.get("bass", 0.0)),
-                   "pitch": int(st.get("pitch", 0)), "humanize": bool(st.get("humanize", True))}
+                   "pitch": int(st.get("pitch", 0)), "length": float(st.get("length", 3.0)),
+                   "humanize": bool(st.get("humanize", True))}
         self.clean = bool(st.get("clean", True))
         self.close_mode = st.get("close_mode", "Keep running in tray")
         self.hint_shown = bool(st.get("hint_shown", False))
@@ -537,10 +618,12 @@ class App(ctk.CTk):
 
         ctk.set_appearance_mode("dark")
         self.title("ReechoKeys")
-        self.geometry("940x680")
-        self.minsize(860, 600)
+        self.geometry("980x700")
+        self.minsize(880, 600)
         self.configure(fg_color=BG)
         self.after(300, self._set_icon)
+        self.dots = {c: dot_image(col) for c, col in CAT_COLOR.items()}
+        self.dot_white = dot_image("#FFFFFF")
 
         self.build_ui()
         self.refresh_cards()
@@ -548,6 +631,8 @@ class App(ctk.CTk):
             self.sel_key = "builtin|Shotgun"
         self.select_key(self.sel_key)
 
+        if ipc_sock is not None:
+            threading.Thread(target=serve_ipc, args=(ipc_sock, self.cmds), daemon=True).start()
         try:
             self.listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
             self.listener.daemon = True
@@ -559,6 +644,7 @@ class App(ctk.CTk):
         if "--minimized" in sys.argv and self.has_tray:
             self.withdraw()
         self.poll()
+        self.tick()
 
     # ---------- UI ----------
     def _set_icon(self):
@@ -573,7 +659,7 @@ class App(ctk.CTk):
         self.grid_rowconfigure(1, weight=1)
         F = ctk.CTkFont
 
-        # header
+        # ---- header ----
         head = ctk.CTkFrame(self, fg_color="transparent")
         head.grid(row=0, column=0, sticky="ew", padx=24, pady=(18, 8))
         head.grid_columnconfigure(1, weight=1)
@@ -583,10 +669,14 @@ class App(ctk.CTk):
         ctk.CTkLabel(title, text="Keys", font=F(size=30, weight="bold"), text_color=ACC).pack(side="left")
         ctk.CTkLabel(head, text="Every key press, a sound.", font=F(size=13), text_color=MUT
                      ).grid(row=1, column=0, sticky="w")
+        self.meter = ctk.CTkProgressBar(head, width=200, height=6, corner_radius=3,
+                                        progress_color=ACC, fg_color=CARD)
+        self.meter.set(0)
+        self.meter.grid(row=0, column=1, rowspan=2)
 
         power = ctk.CTkFrame(head, fg_color=PANEL, corner_radius=18)
         power.grid(row=0, column=2, rowspan=2, sticky="e")
-        self.power_label = ctk.CTkLabel(power, text="ON", font=F(size=15, weight="bold"), text_color=ACC, width=60)
+        self.power_label = ctk.CTkLabel(power, text="ON", font=F(size=15, weight="bold"), text_color=ACC, width=64)
         self.power_label.pack(side="left", padx=(18, 4), pady=12)
         self.power_switch = ctk.CTkSwitch(power, text="", width=60, switch_width=56, switch_height=28,
                                           progress_color=ACC, button_color="#FFFFFF",
@@ -597,11 +687,11 @@ class App(ctk.CTk):
         ctk.CTkLabel(power, text="F9 mutes anywhere", font=F(size=11), text_color=MUT
                      ).pack(side="left", padx=(6, 18))
 
-        # body
+        # ---- body ----
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=24, pady=6)
         body.grid_columnconfigure(0, weight=3)
-        body.grid_columnconfigure(1, weight=2, minsize=320)
+        body.grid_columnconfigure(1, weight=2, minsize=350)
         body.grid_rowconfigure(0, weight=1)
 
         left = ctk.CTkFrame(body, fg_color=PANEL, corner_radius=20)
@@ -623,25 +713,47 @@ class App(ctk.CTk):
                                        scrollbar_button_color=CARD_H, scrollbar_button_hover_color=MUT)
         right.grid(row=0, column=1, sticky="nsew")
         right.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(right, text="Sound tuning", font=F(size=17, weight="bold"), text_color=TXT
-                     ).grid(row=0, column=0, sticky="w", padx=18, pady=(10, 0))
-        self.sl_vol = self.slider(right, 1, "Volume", 0, 1, 100, self._volume, lambda v: f"{int(v * 100)}%", self.on_volume)
-        self.sl_rev = self.slider(right, 2, "Reverb", 0, 1, 20, self.fx["reverb"], lambda v: f"{int(v * 100)}%", self.on_fx("reverb"))
-        self.sl_bass = self.slider(right, 3, "Bass boost", 0, 1, 20, self.fx["bass"], lambda v: f"{int(v * 100)}%", self.on_fx("bass"))
-        self.sl_pitch = self.slider(right, 4, "Pitch", -12, 12, 24, self.fx["pitch"], lambda v: f"{int(round(v)):+d} st", self.on_fx("pitch"))
+
+        ctk.CTkLabel(right, text="NOW PLAYING", font=F(size=11, weight="bold"), text_color=MUT
+                     ).grid(row=0, column=0, sticky="w", padx=18, pady=(14, 0))
+        top = ctk.CTkFrame(right, fg_color="transparent")
+        top.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 8))
+        self.now_name = ctk.CTkLabel(top, text="Shotgun", font=F(size=24, weight="bold"), text_color=TXT)
+        self.now_name.pack(side="left")
+        self.now_cat = ctk.CTkLabel(top, text="GUNS", font=F(size=10, weight="bold"), text_color="#0B0C10",
+                                    fg_color=ACC, corner_radius=8, width=62, height=22)
+        self.now_cat.pack(side="left", padx=(10, 0))
+        wf = ctk.CTkFrame(right, fg_color=CARD, corner_radius=14)
+        wf.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 10))
+        self.wave = tk.Canvas(wf, width=280, height=50, bg=CARD, highlightthickness=0)
+        self.wave.pack(padx=12, pady=8)
+
+        self.sl_vol = self.slider(right, 3, 0, "Volume", 0, 1, 100, self._volume,
+                                  lambda v: f"{int(v * 100)}%", self.on_volume, pad=(14, 14))
+        grid = ctk.CTkFrame(right, fg_color="transparent")
+        grid.grid(row=4, column=0, sticky="ew", padx=10)
+        grid.grid_columnconfigure((0, 1), weight=1, uniform="s")
+        self.sl_rev = self.slider(grid, 0, 0, "Reverb", 0, 1, 20, self.fx["reverb"],
+                                  lambda v: f"{int(v * 100)}%", self.on_fx("reverb"))
+        self.sl_bass = self.slider(grid, 0, 1, "Bass boost", 0, 1, 20, self.fx["bass"],
+                                   lambda v: f"{int(v * 100)}%", self.on_fx("bass"))
+        self.sl_len = self.slider(grid, 1, 0, "Length", 0.1, 3.0, 29, self.fx["length"],
+                                  lambda v: "Full" if v >= 2.95 else f"{v:.1f}s", self.on_fx("length"))
+        self.sl_pitch = self.slider(grid, 1, 1, "Pitch", -12, 12, 24, self.fx["pitch"],
+                                    lambda v: f"{int(round(v)):+d} st", self.on_fx("pitch"))
 
         sw = dict(progress_color=ACC, button_color="#FFFFFF", button_hover_color="#E8E8E8",
                   fg_color="#3A3F4D", font=F(size=13), text_color=TXT)
         self.sw_clean = ctk.CTkSwitch(right, text="Clean cut  (no overlapping sounds)", command=self.on_clean, **sw)
-        self.sw_clean.grid(row=5, column=0, sticky="w", padx=18, pady=(10, 4))
+        self.sw_clean.grid(row=5, column=0, sticky="w", padx=18, pady=(8, 3))
         (self.sw_clean.select if self.clean else self.sw_clean.deselect)()
         self.sw_hum = ctk.CTkSwitch(right, text="Humanize  (each press slightly different)", command=self.on_humanize, **sw)
-        self.sw_hum.grid(row=6, column=0, sticky="w", padx=18, pady=4)
+        self.sw_hum.grid(row=6, column=0, sticky="w", padx=18, pady=3)
         (self.sw_hum.select if self.fx["humanize"] else self.sw_hum.deselect)()
 
         btn = dict(corner_radius=12, height=36, font=F(size=13, weight="bold"))
         ctk.CTkButton(right, text="Test sound", fg_color=ACC, hover_color=ACC_H, text_color="#FFF",
-                      command=self.play, **btn).grid(row=7, column=0, sticky="ew", padx=18, pady=(12, 6))
+                      command=self.play, **btn).grid(row=7, column=0, sticky="ew", padx=18, pady=(10, 5))
         row = ctk.CTkFrame(right, fg_color="transparent")
         row.grid(row=8, column=0, sticky="ew", padx=18, pady=(0, 14))
         row.grid_columnconfigure((0, 1, 2), weight=1, uniform="b")
@@ -651,18 +763,17 @@ class App(ctk.CTk):
         ctk.CTkButton(row, text="Remove", command=self.remove_sound, **small).grid(row=0, column=1, sticky="ew", padx=3)
         ctk.CTkButton(row, text="Folder", command=lambda: open_folder(SOUNDS_DIR), **small).grid(row=0, column=2, sticky="ew", padx=(3, 0))
 
-        # footer
+        # ---- footer ----
         foot = ctk.CTkFrame(self, fg_color="transparent")
         foot.grid(row=2, column=0, sticky="ew", padx=24, pady=(6, 18))
         foot.grid_columnconfigure(2, weight=1)
-        self.status = ctk.CTkLabel(foot, text="Shots: 0", font=F(size=13), text_color=MUT, width=90, anchor="w")
+        self.status = ctk.CTkLabel(foot, text=f"Shots: 0   ·   v{__version__}", font=F(size=12),
+                                   text_color=MUT, anchor="w")
         self.status.grid(row=0, column=0, sticky="w")
-        col = 1
         if sys.platform.startswith("win"):
             self.sw_auto = ctk.CTkSwitch(foot, text="Start with Windows", command=self.on_autostart, **sw)
-            self.sw_auto.grid(row=0, column=col, padx=(10, 6))
+            self.sw_auto.grid(row=0, column=1, padx=(18, 6))
             (self.sw_auto.select if autostart_get() else self.sw_auto.deselect)()
-            col += 1
         ctk.CTkLabel(foot, text="").grid(row=0, column=2, sticky="ew")
         if TRAY_OK:
             ctk.CTkLabel(foot, text="When I close the window:", font=F(size=12), text_color=MUT
@@ -679,9 +790,9 @@ class App(ctk.CTk):
         ctk.CTkButton(foot, text="Quit ReechoKeys", fg_color=RED, hover_color="#E04A39", text_color="#FFF",
                       width=140, command=self.quit_app, **btn).grid(row=0, column=5)
 
-    def slider(self, parent, row, label, lo, hi, steps, init, fmt, cmd):
+    def slider(self, parent, row, col, label, lo, hi, steps, init, fmt, cmd, pad=(4, 4)):
         f = ctk.CTkFrame(parent, fg_color="transparent")
-        f.grid(row=row, column=0, sticky="ew", padx=18, pady=4)
+        f.grid(row=row, column=col, sticky="ew", padx=pad[0], pady=3)
         f.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=13), text_color=TXT).grid(row=0, column=0, sticky="w")
         val = ctk.CTkLabel(f, text=fmt(init), font=ctk.CTkFont(size=13), text_color=ACC)
@@ -701,6 +812,10 @@ class App(ctk.CTk):
     def valid_keys(self):
         return [f"builtin|{n}" for n in SOUNDS] + [f"custom|{n}" for n in self.custom]
 
+    def cat_of(self, key):
+        kind, name = key.split("|", 1)
+        return SOUNDS[name][0] if kind == "builtin" and name in SOUNDS else "Mine"
+
     def refresh_cards(self):
         self.custom = scan_custom()
         for w in self.card_frame.winfo_children():
@@ -716,11 +831,12 @@ class App(ctk.CTk):
             self.card_frame.grid_columnconfigure(c, weight=1, uniform="cards")
         self.cards = {}
         if not items:
-            ctk.CTkLabel(self.card_frame, text="No sounds here yet.\nClick  + Add my sound  to bring your own.",
+            ctk.CTkLabel(self.card_frame, text="No sounds here yet.\nClick  + Add mine  to bring your own.",
                          font=ctk.CTkFont(size=13), text_color=MUT, justify="center"
                          ).grid(row=0, column=0, columnspan=cols, pady=60)
         for i, (key, label) in enumerate(items):
-            b = ctk.CTkButton(self.card_frame, text=label, height=54, corner_radius=14,
+            b = ctk.CTkButton(self.card_frame, text=label, height=54, corner_radius=14, anchor="w",
+                              image=self.dots[self.cat_of(key)], compound="left",
                               font=ctk.CTkFont(size=13, weight="bold"), fg_color=CARD, hover_color=CARD_H,
                               text_color=TXT, command=lambda k=key: self.pick(k))
             b.grid(row=i // cols, column=i % cols, padx=5, pady=5, sticky="ew")
@@ -731,7 +847,8 @@ class App(ctk.CTk):
         for key, b in self.cards.items():
             on = key == self.sel_key
             b.configure(fg_color=ACC if on else CARD, hover_color=ACC_H if on else CARD_H,
-                        text_color="#FFFFFF" if on else TXT)
+                        text_color="#FFFFFF" if on else TXT,
+                        image=self.dot_white if on else self.dots[self.cat_of(key)])
 
     def on_category(self, value):
         self.category = value
@@ -759,17 +876,42 @@ class App(ctk.CTk):
                 self.raw_cache[key] = arrs * 4 if len(arrs) == 1 else arrs
         self.sel_key = key
         self.raw = self.raw_cache[key]
+        cat = self.cat_of(key)
+        self.now_name.configure(text=name)
+        self.now_cat.configure(text=cat.upper(), fg_color=CAT_COLOR[cat])
         self.rerender()
         self.paint()
 
     def rerender(self):
         fx = dict(self.fx)
         self.current = [to_sound(apply_fx(x.copy(), fx)) for x in self.raw]
+        self.draw_wave()
 
     def schedule_rerender(self):
         if self._rerender_job:
             self.after_cancel(self._rerender_job)
         self._rerender_job = self.after(250, self.rerender)
+
+    def draw_wave(self):
+        c = self.wave
+        c.delete("all")
+        if not self.current:
+            return
+        try:
+            x = np.abs(sound_to_array(self.current[0]))
+        except Exception:
+            return
+        w, h = int(c["width"]), int(c["height"])
+        bins = 70
+        chunk = max(1, len(x) // bins)
+        amps = x[: chunk * bins].reshape(-1, chunk).max(axis=1)
+        amps = amps / (amps.max() + 1e-9)
+        mid, step = h / 2, w / len(amps)
+        for i, a in enumerate(amps):
+            px = i * step + step / 2
+            ph = max(1.5, a * (mid - 3))
+            c.create_line(px, mid - ph, px, mid + ph, fill=mix_color(float(a)),
+                          width=max(2, step * 0.55), capstyle="round")
 
     # ---------- controls ----------
     def on_power(self):
@@ -847,7 +989,7 @@ class App(ctk.CTk):
         if self.clean:                              # cut the previous sound cleanly
             for ch in self.voices:
                 if ch.get_busy():
-                    ch.fadeout(25)
+                    ch.fadeout(20)
             self.voices = []
         elif len(self.voices) >= 6:                 # layered mode: cap the pile-up
             old = self.voices.pop(0)
@@ -857,6 +999,7 @@ class App(ctk.CTk):
         if ch:
             self.voices.append(ch)
         self.count += 1
+        self._level = 1.0
 
     def on_press(self, key):                        # listener thread
         if key in self.pressed:                     # ignore held-key repeat
@@ -880,31 +1023,45 @@ class App(ctk.CTk):
                 pystray.MenuItem("Open ReechoKeys", lambda i, it: self.cmds.put("show"), default=True),
                 pystray.MenuItem("Mute / Unmute  (F9)", lambda i, it: self.cmds.put("toggle")),
                 pystray.MenuItem("Quit", lambda i, it: self.cmds.put("quit")))
-            self.tray = pystray.Icon("ReechoKeys", make_icon(), "ReechoKeys", menu)
+            self.tray = pystray.Icon("ReechoKeys", tray_image(), "ReechoKeys", menu)
             self.tray.run_detached()
             return True
         except Exception:
             return False
 
+    def show_window(self):
+        self.deiconify()
+        self.lift()
+        self.attributes("-topmost", True)
+        self.after(300, lambda: self.attributes("-topmost", False))
+        self.focus_force()
+
     def on_close(self):
-        if self.close_mode == "Quit app" or not self.has_tray:
+        if not self.has_tray:
+            return self.quit_app()
+        if not self.hint_shown:                     # ask once, then remember
+            ans = messagebox.askyesnocancel(
+                "ReechoKeys",
+                "Keep ReechoKeys running in the background so your sounds keep playing?\n\n"
+                "Yes  -  keep it running in the tray (near the clock)\n"
+                "No  -  quit completely\n"
+                "Cancel  -  go back\n\n"
+                "You can change this later at the bottom of the app.")
+            if ans is None:
+                return
+            self.hint_shown = True
+            self.close_mode = "Keep running in tray" if ans else "Quit app"
+            if hasattr(self, "close_menu"):
+                self.close_menu.set(self.close_mode)
+        if self.close_mode == "Quit app":
             return self.quit_app()
         self.withdraw()
-        if not self.hint_shown:
-            self.hint_shown = True
-            messagebox.showinfo(
-                "ReechoKeys is still running",
-                "ReechoKeys keeps running in the background.\n\n"
-                "Find its icon near the clock (bottom-right; you may need to click the ^ arrow). "
-                "Click it to open, or right-click > Quit to turn it off completely.\n\n"
-                "You can change this with 'When I close the window' at the bottom of the app.")
 
     def poll(self):                                 # UI thread
         while not self.cmds.empty():
             cmd = self.cmds.get()
             if cmd == "show":
-                self.deiconify()
-                self.lift()
+                self.show_window()
             elif cmd == "toggle":
                 self._enabled = not self._enabled
             elif cmd == "quit":
@@ -913,18 +1070,26 @@ class App(ctk.CTk):
             (self.power_switch.select if self._enabled else self.power_switch.deselect)()
         self.power_label.configure(text="ON" if self._enabled else "MUTED",
                                    text_color=ACC if self._enabled else MUT)
-        self.status.configure(text=f"Shots: {self.count}")
+        self.status.configure(text=f"Shots: {self.count}   ·   v{__version__}")
         self.after(150, self.poll)
+
+    def tick(self):                                 # activity meter (never shows which key)
+        self._level *= 0.86
+        self.meter.set(min(1.0, self._level) if self._enabled else 0)
+        self.after(40, self.tick)
 
     def quit_app(self):
         try:
             SETTINGS_FILE.write_text(json.dumps({
                 "sound": self.sel_key, "volume": self._volume, "reverb": self.fx["reverb"],
-                "bass": self.fx["bass"], "pitch": self.fx["pitch"], "humanize": self.fx["humanize"],
-                "clean": self.clean, "close_mode": self.close_mode, "hint_shown": self.hint_shown}))
+                "bass": self.fx["bass"], "pitch": self.fx["pitch"], "length": self.fx["length"],
+                "humanize": self.fx["humanize"], "clean": self.clean,
+                "close_mode": self.close_mode, "hint_shown": self.hint_shown}))
         except Exception:
             pass
         try:
+            if self.ipc_sock:
+                self.ipc_sock.close()
             if self.listener:
                 self.listener.stop()
             if self.tray:
@@ -935,4 +1100,7 @@ class App(ctk.CTk):
 
 
 if __name__ == "__main__":
-    App().mainloop()
+    first, lock = claim_single_instance()
+    if first:
+        App(lock).mainloop()
+    os._exit(0)                                     # make sure no background thread keeps us alive

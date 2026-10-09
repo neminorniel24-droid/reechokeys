@@ -13,8 +13,8 @@ import pygame
 import reechokeys as r
 
 pygame.mixer.init(r.SR, -16, 2, 512, allowedchanges=0)
-plain = {"pitch": 0, "bass": 0.0, "reverb": 0.0, "humanize": False}
-heavy = {"pitch": 5, "bass": 1.0, "reverb": 1.0, "humanize": True}
+plain = {"pitch": 0, "bass": 0.0, "reverb": 0.0, "length": 3.0, "humanize": False}
+heavy = {"pitch": 5, "bass": 1.0, "reverb": 1.0, "length": 0.2, "humanize": True}
 
 assert len(r.SOUNDS) >= 30, "sound library shrank"
 for name, (cat, fn) in r.SOUNDS.items():

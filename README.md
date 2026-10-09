@@ -20,11 +20,11 @@ Turn your keyboard into a shotgun, a laser, a typewriter or a marimba - in <i>ev
 
 - **34 built-in sounds** in 5 categories: Guns, Impact, Sci-Fi, Keyboard (blue / red / brown switch, thock, typewriter) and Fun (coin, boing, bell, marimba, drums...). All are synthesized in code, so there are no audio files to download.
 - **Works everywhere** - browser, games, documents, terminals. It reacts to key presses system-wide.
-- **Live tuning** - volume, reverb, bass boost and pitch sliders, plus *Humanize* so no two presses sound identical.
+- **Live tuning** - volume, reverb, bass boost, pitch and length sliders, a live waveform of the selected sound, plus *Humanize* so no two presses sound identical.
 - **Clean cut** - fast typing stays crisp instead of turning into a wall of overlapping sound.
 - **Bring your own sounds** - add `.wav`, `.ogg`, `.mp3` or `.flac` files. Put several files in one folder to make a *pack* (a random one plays on each press).
-- **Easy to switch off** - power switch in the app, **F9** anywhere, tray menu, or the Quit button.
-- **Private** - ReechoKeys only reacts to *"a key was pressed"*. It never records, stores or sends what you type, and it makes no network connections. The code is short and open, so you can check.
+- **Easy to switch off** - power switch in the app, **F9** anywhere, tray menu, or the Quit button. Opening the app a second time just brings the first window back, so you never end up with two copies.
+- **Private** - ReechoKeys only reacts to *"a key was pressed"*. It never records, stores or sends what you type, and it never connects to the internet. (It only uses a local port on your own computer so a second launch can wake the first one.) The code is open, so you can check.
 
 ## Install
 
@@ -43,7 +43,7 @@ Download the file for your system from the **[latest release](https://github.com
 3. Follow the installer. Optionally tick *desktop shortcut* and *start with Windows*.
 4. Open **ReechoKeys**, pick a sound, and type anywhere.
 
-Closing the window keeps ReechoKeys running in the system tray (near the clock). Right-click the tray icon to **Quit** completely.
+The first time you close the window, ReechoKeys asks whether to **keep running in the background** (so sounds keep playing) or **quit completely**, and remembers your answer. You can change it any time at the bottom of the app. When it runs in the background you'll see it in the system tray near the clock - right-click the icon to **Quit**.
 
 ### macOS (experimental)
 
@@ -66,6 +66,7 @@ Closing the window keeps ReechoKeys running in the system tray (near the clock).
 **Option A - download the binary**
 ```bash
 tar -xzf ReechoKeys-Linux.tar.gz
+cd ReechoKeys
 chmod +x ReechoKeys
 ./ReechoKeys
 ```
@@ -83,7 +84,7 @@ Tray icons on GNOME need the *AppIndicator* extension. Without one, closing the 
 ## How to use
 
 1. **Pick a sound** from the cards (use the tabs to filter). Clicking a card plays a preview.
-2. **Tune it** with the sliders on the right. Changes apply after a quarter of a second.
+2. **Tune it** with the sliders on the right (volume, reverb, bass, length, pitch). Changes apply after a quarter of a second. Use **Length** to cut long sounds short.
 3. **Type anywhere.** Every key press plays the sound.
 4. **Turn it off** with the power switch (top right), **F9**, or the red **Quit ReechoKeys** button.
 
@@ -99,6 +100,8 @@ Tray icons on GNOME need the *AppIndicator* extension. Without one, closing the 
 | macOS: nothing happens when typing | Add ReechoKeys to **Accessibility** and **Input Monitoring**, then restart it. |
 | Linux: works in some apps only | You're probably on Wayland. Log in with an Xorg session. |
 | Windows warns about the installer | Expected for unsigned apps. Click *More info -> Run anyway*. |
+| ReechoKeys still shows in Task Manager after closing | You chose *keep running in the background*. Right-click the tray icon -> **Quit**, or click **Quit ReechoKeys** inside the app. |
+| Sounds seem doubled | Make sure **Clean cut** is on. Update to v1.2 or newer, which prevents two copies running at once. |
 | Fn / brightness / volume keys are silent | Laptop hardware handles those, so the system never reports them. |
 
 Still stuck? [Open an issue](https://github.com/neminorniel24-droid/reechokeys/issues/new/choose) and tell us your system and what you see.

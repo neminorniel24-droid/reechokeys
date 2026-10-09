@@ -1,7 +1,7 @@
 ; Inno Setup script - makes ReechoKeys-Setup.exe (a normal Windows installer)
 [Setup]
 AppName=ReechoKeys
-AppVersion=1.0
+AppVersion=1.2
 AppPublisher=ReechoKeys
 DefaultDirName={autopf}\ReechoKeys
 DefaultGroupName=ReechoKeys
@@ -19,7 +19,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"
 Name: "startup"; Description: "Start ReechoKeys automatically when Windows starts"
 
 [Files]
-Source: "dist\ReechoKeys.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\ReechoKeys\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\ReechoKeys"; Filename: "{app}\ReechoKeys.exe"
