@@ -30,6 +30,7 @@ try:
     from PIL import Image, ImageDraw
 except Exception:          # tray is optional; the app still works without it
     pystray = None
+TRAY_OK = pystray is not None and sys.platform != "darwin"
 
 SR = 44100
 rng = np.random.default_rng()
@@ -663,14 +664,18 @@ class App(ctk.CTk):
             (self.sw_auto.select if autostart_get() else self.sw_auto.deselect)()
             col += 1
         ctk.CTkLabel(foot, text="").grid(row=0, column=2, sticky="ew")
-        ctk.CTkLabel(foot, text="When I close the window:", font=F(size=12), text_color=MUT
-                     ).grid(row=0, column=3, padx=(6, 6))
-        self.close_menu = ctk.CTkOptionMenu(
-            foot, values=["Keep running in tray", "Quit app"], command=self.on_close_mode, width=170,
-            fg_color=CARD, button_color=CARD_H, button_hover_color=MUT, dropdown_fg_color=CARD,
-            dropdown_hover_color=CARD_H, text_color=TXT, font=F(size=12))
-        self.close_menu.set(self.close_mode)
-        self.close_menu.grid(row=0, column=4, padx=(0, 10))
+        if TRAY_OK:
+            ctk.CTkLabel(foot, text="When I close the window:", font=F(size=12), text_color=MUT
+                         ).grid(row=0, column=3, padx=(6, 6))
+            self.close_menu = ctk.CTkOptionMenu(
+                foot, values=["Keep running in tray", "Quit app"], command=self.on_close_mode, width=170,
+                fg_color=CARD, button_color=CARD_H, button_hover_color=MUT, dropdown_fg_color=CARD,
+                dropdown_hover_color=CARD_H, text_color=TXT, font=F(size=12))
+            self.close_menu.set(self.close_mode)
+            self.close_menu.grid(row=0, column=4, padx=(0, 10))
+        else:
+            ctk.CTkLabel(foot, text="Closing the window quits ReechoKeys", font=F(size=12),
+                         text_color=MUT).grid(row=0, column=3, columnspan=2, padx=(6, 12))
         ctk.CTkButton(foot, text="Quit ReechoKeys", fg_color=RED, hover_color="#E04A39", text_color="#FFF",
                       width=140, command=self.quit_app, **btn).grid(row=0, column=5)
 
@@ -868,7 +873,7 @@ class App(ctk.CTk):
 
     # ---------- tray / lifecycle ----------
     def start_tray(self):
-        if pystray is None:
+        if not TRAY_OK:
             return False
         try:
             menu = pystray.Menu(

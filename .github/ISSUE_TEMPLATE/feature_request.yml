@@ -1,0 +1,11 @@
+name: Feature or sound request
+description: Suggest an idea or a new sound
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: Describe the feature or sound you'd like to see.
+    validations:
+      required: true

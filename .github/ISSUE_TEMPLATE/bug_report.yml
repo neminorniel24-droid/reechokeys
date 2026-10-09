@@ -1,0 +1,23 @@
+name: Bug report
+description: Something doesn't work
+labels: [bug]
+body:
+  - type: dropdown
+    id: os
+    attributes:
+      label: Your system
+      options: [Windows 10, Windows 11, macOS, Linux (X11), Linux (Wayland), Other]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ReechoKeys version
+      description: From the release you downloaded, e.g. v1.1
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what actually happened? Screenshots help.
+    validations:
+      required: true

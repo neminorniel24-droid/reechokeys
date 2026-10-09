@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+build/
+dist/
+installer/
+*.spec
+.venv/
+venv/
+.DS_Store

@@ -1,0 +1,21 @@
+name: Check
+
+# Runs on every proposed change (pull request) so the maintainer sees problems early.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sounds:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - run: pip install -r requirements.txt
+      - run: python -m py_compile reechokeys.py
+      - run: xvfb-run -a python tests/test_sounds.py
